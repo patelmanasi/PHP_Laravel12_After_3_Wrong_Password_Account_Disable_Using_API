@@ -5,16 +5,28 @@ namespace App\Http\Controllers\API;
 use App\Http\Controllers\Controller;
 use Illuminate\Http\Request;
 use App\Models\Account;
+use App\Models\LoginAttempt;
 use Illuminate\Support\Facades\Hash;
+use Carbon\Carbon;
 
 class AuthController extends Controller
 {
+    /**
+     * REGISTER API
+     */
     public function register(Request $request)
     {
         $request->validate([
             'name' => 'required|string|max:255',
             'email' => 'required|email|unique:accounts',
-            'password' => 'required|min:6'
+            'password' => [
+                'required',
+                'min:8',
+                'regex:/[A-Z]/',
+                'regex:/[a-z]/',
+                'regex:/[0-9]/',
+                'regex:/[@$!%*?&]/'
+            ]
         ]);
 
         $account = Account::create([
@@ -30,6 +42,9 @@ class AuthController extends Controller
         ]);
     }
 
+    /**
+     * LOGIN API (3 wrong attempts + 3 min lock + auto unlock)
+     */
     public function login(Request $request)
     {
         $request->validate([
@@ -46,21 +61,65 @@ class AuthController extends Controller
             ], 404);
         }
 
-        //  Check disabled account
-        if (!$account->is_active) {
-            return response()->json([
-                'status' => false,
-                'message' => 'Account disabled due to multiple wrong passwords'
-            ], 403);
+        /* -----------------------------
+           CHECK ACCOUNT LOCKED
+        ------------------------------*/
+        if ($account->locked_at) {
+
+            $unlockTime = Carbon::parse($account->locked_at)->addMinutes(3);
+
+            if (now()->lt($unlockTime)) {
+
+                LoginAttempt::create([
+                    'email' => $request->email,
+                    'ip_address' => $request->ip(),
+                    'status' => 'blocked'
+                ]);
+
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Account locked due to 3 wrong attempts. Please wait 3 minutes and try again.',
+                    'unlock_at' => $unlockTime->format('Y-m-d H:i:s')
+                ], 403);
+            }
+
+            // AUTO UNLOCK AFTER 3 MINUTES
+            $account->update([
+                'wrong_attempts' => 0,
+                'locked_at' => null
+            ]);
         }
 
-        //  Wrong password
+        /* -----------------------------
+           WRONG PASSWORD
+        ------------------------------*/
         if (!Hash::check($request->password, $account->password)) {
 
             $account->increment('wrong_attempts');
 
+            LoginAttempt::create([
+                'email' => $request->email,
+                'ip_address' => $request->ip(),
+                'status' => 'failed'
+            ]);
+
             if ($account->wrong_attempts >= 3) {
-                $account->update(['is_active' => false]);
+
+                $account->update([
+                    'locked_at' => now(),
+                    'wrong_attempts' => 3
+                ]);
+
+                LoginAttempt::create([
+                    'email' => $request->email,
+                    'ip_address' => $request->ip(),
+                    'status' => 'blocked'
+                ]);
+
+                return response()->json([
+                    'status' => false,
+                    'message' => 'Account locked due to 3 wrong attempts. Please wait 3 minutes and try again.'
+                ], 403);
             }
 
             return response()->json([
@@ -70,13 +129,37 @@ class AuthController extends Controller
             ], 401);
         }
 
-        //  Correct password → reset attempts
-        $account->update(['wrong_attempts' => 0]);
+        /* -----------------------------
+           SUCCESS LOGIN
+        ------------------------------*/
+        $account->update([
+            'wrong_attempts' => 0
+        ]);
+
+        LoginAttempt::create([
+            'email' => $request->email,
+            'ip_address' => $request->ip(),
+            'status' => 'success'
+        ]);
+
+        $token = auth()->login($account);
 
         return response()->json([
             'status' => true,
             'message' => 'Login successful',
+            'token' => $token,
             'data' => $account
+        ]);
+    }
+
+    /**
+     * ADMIN - LOCKED ACCOUNTS
+     */
+    public function lockedAccounts()
+    {
+        return response()->json([
+            'status' => true,
+            'data' => Account::whereNotNull('locked_at')->get()
         ]);
     }
 }
