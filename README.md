@@ -382,4 +382,7 @@ PHP_Laravel12_After_3_Wrong_Password_Account_Disable_Using_API/
 ---
 
 Your PHP_Laravel12_After_3_Wrong_Password_Account_Disable_Using_API Project is now ready!
+<<<<<<< HEAD
 
+=======
+>>>>>>> development
